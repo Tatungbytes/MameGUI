@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# MameGUI.py — Cross-platform MAME disk launcher with configuration support
+# MameGUI.py — Cross-platform MAME disk launcher (Windows/Linux)
 
 import os
 import sys
@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 APP_NAME = "MameGUI"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 CONFIG_FILE = Path.home() / ".mamegui_config.json"
@@ -79,14 +79,6 @@ def ensure_runtime_dir_env(env: dict) -> dict:
                 os.makedirs(tmp, mode=0o700, exist_ok=True)
                 env["XDG_RUNTIME_DIR"] = tmp
     return env
-
-
-def ensure_display_if_linux():
-    """Only run a display check on Linux, skip everywhere else."""
-    if sys.platform.startswith("linux"):
-        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
-            print("No graphical display detected. Please run in a desktop session or use SSH with -X.")
-            sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Logging helper
@@ -168,16 +160,21 @@ class App:
         # Disks section
         lf_disks = ttk.LabelFrame(frm, text="Disks")
         lf_disks.pack(fill="x", pady=(0, pad))
-        self._row(lf_disks, "User .dsk:", self.var_user_dsk, browse=True, filetypes=[("Disk images", "*.dsk *.DSK"), ("All files", "*.*")], label_font=emphasised_font)
-        self._row(lf_disks, "System .dsk:", self.var_system_dsk, browse=True, filetypes=[("Disk images", "*.dsk *.DSK"), ("All files", "*.*")])
+        self._row(lf_disks, "User .dsk:", self.var_user_dsk, browse=True,
+                  filetypes=[("Disk images", "*.dsk *.DSK"), ("All files", "*.*")],
+                  label_font=emphasised_font)
+        self._row(lf_disks, "System .dsk:", self.var_system_dsk, browse=True,
+                  filetypes=[("Disk images", "*.dsk *.DSK"), ("All files", "*.*")])
         dr = ttk.Frame(lf_disks)
         dr.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Checkbutton(dr, text="Use system disk in drive 1 and user disk in drive 2", variable=self.var_use_system).pack(side="left")
+        ttk.Checkbutton(dr, text="Use system disk in drive 1 and user disk in drive 2",
+                        variable=self.var_use_system).pack(side="left")
 
         # MAME section
         lf_mame = ttk.LabelFrame(frm, text="MAME")
         lf_mame.pack(fill="x", pady=(0, pad))
-        self._row(lf_mame, "MAME executable:", self.var_mame, browse=True, filetypes=[("Executable", "*.exe *.bin *.app *.sh"), ("All files", "*.*")])
+        self._row(lf_mame, "MAME executable:", self.var_mame, browse=True,
+                  filetypes=[("Executable", "*.exe *.bin *.app *.sh"), ("All files", "*.*")])
         self._row(lf_mame, "ROM path:", self.var_rompath, browse_dir=True)
         self._row(lf_mame, "Machine:", self.var_machine)
 
@@ -330,8 +327,7 @@ class App:
 # ---------------------------------------------------------------------------
 
 def main():
-    # Only check for Linux displays — skip on Windows entirely
-    ensure_display_if_linux()
+    # 🚫 No display check at all — runs on Windows, Linux, or macOS
     if THEME:
         app = tb.Window(themename="cosmo")
         App(app)
