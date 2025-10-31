@@ -1,68 +1,86 @@
 #!/usr/bin/env python3
-# MameGUI.py
-# Select a .dsk image and launch MAME with a few sensible options.
-
-APP_NAME = "MameGUI"
-APP_VERSION = "0.9.0"
-APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
+# MameGUI.py — cross-platform MAME disk runner
 
 import os
 import sys
+import json
 import shutil
 import subprocess
 import threading
 import datetime
 from pathlib import Path
-
-# GUI deps
 import tkinter as tk
 from tkinter import font as tkfont
 
-# Require a GUI (same approach as the reference app)
-if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
-    print("No graphical display detected. Start a desktop session or use SSH with -X, then run: python3 Mame_DiskRunner.py")
-    sys.exit(1)
+APP_NAME = "MameGUI"
+APP_VERSION = "1.0.0"
+APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
-# Optional theming
-try:
-    import ttkbootstrap as tb
-    from ttkbootstrap.constants import *
-    from tkinter import ttk, filedialog, messagebox
-    THEME = True
-except Exception:
-    from tkinter import ttk, filedialog, messagebox
-    THEME = False
+CONFIG_FILE = Path.home() / ".mamegui_config.json"
+LOG_DIR = Path.home() / "Documents" / "Logs"
 
-# Defaults mirroring the style of the reference tool
+# --- Platform-specific defaults ---------------------------------------------
+
+if os.name == "nt":
+    DEFAULTS = {
+        "mame": str(Path("C:/MAME/mame.exe")),
+        "rompath": str(Path.home() / "Documents/mame/roms"),
+        "system_dsk": str(Path.home() / "Documents/Disk Images/DOS80.DSK"),
+        "workdir": str(Path.home() / "Desktop"),
+    }
+else:
+    DEFAULTS = {
+        "mame": "/usr/games/mame",
+        "rompath": str(Path.home() / ".mame/roms"),
+        "system_dsk": str(Path.home() / "Documents/Disk Images/DOS80.DSK"),
+        "workdir": str(Path.home() / "Desktop"),
+    }
+
+DEFAULT_MACHINE = "einstein"
 DEFAULT_RESOLUTION = "800x600"
-DEFAULT_MACHINE = "einstein"   # Tatung Einstein per the reference tool
 
-HARDCODED = {
-    "mame": "/usr/games/mame",
-    "rompath": str(Path.home() / ".mame/roms"),
-    "system_dsk": str(Path.home() / "Documents/Disk Images/DOS80.DSK"),
-    "workdir": str(Path.home() / "Desktop"),
-}
 
-# Logging directory
-LOG_DIR = Path(Path.home() / "Documents/Logs")
+# --- Configuration management ----------------------------------------------
 
+def load_config() -> dict:
+    """Load configuration or create default one."""
+    cfg = DEFAULTS.copy()
+    if CONFIG_FILE.exists():
+        try:
+            user_cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            cfg.update(user_cfg)
+        except Exception:
+            pass
+    return cfg
+
+
+def save_config(cfg: dict):
+    """Save configuration to JSON."""
+    try:
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"Warning: could not save config: {e}")
+
+
+# --- Environment helpers ----------------------------------------------------
 
 def ensure_runtime_dir_env(env: dict) -> dict:
-    """Ensure XDG_RUNTIME_DIR exists for SDL based MAME launches."""
-    if "XDG_RUNTIME_DIR" not in env or not env["XDG_RUNTIME_DIR"]:
-        cand = f"/run/user/{os.getuid()}"
-        if os.path.isdir(cand):
-            env["XDG_RUNTIME_DIR"] = cand
-        else:
-            tmp = f"/tmp/runtime-{os.environ.get('USER','user')}"
-            os.makedirs(tmp, mode=0o700, exist_ok=True)
-            env["XDG_RUNTIME_DIR"] = tmp
+    """Ensure XDG_RUNTIME_DIR for Linux MAME (no-op on Windows)."""
+    if os.name != "nt":
+        if "XDG_RUNTIME_DIR" not in env or not env["XDG_RUNTIME_DIR"]:
+            cand = f"/run/user/{os.getuid()}"
+            if os.path.isdir(cand):
+                env["XDG_RUNTIME_DIR"] = cand
+            else:
+                tmp = f"/tmp/runtime-{os.environ.get('USER', 'user')}"
+                os.makedirs(tmp, mode=0o700, exist_ok=True)
+                env["XDG_RUNTIME_DIR"] = tmp
     return env
 
 
+# --- File logging -----------------------------------------------------------
+
 class FileLogger:
-    """Simple logfile writer and process streamer (matches reference style)."""
     def __init__(self, log_path: Path):
         self.log_path = log_path
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,55 +107,63 @@ class FileLogger:
             raise subprocess.CalledProcessError(rc, args)
 
 
+# --- GUI Application --------------------------------------------------------
+
+try:
+    import ttkbootstrap as tb
+    from ttkbootstrap.constants import *
+    from tkinter import ttk, filedialog, messagebox
+    THEME = True
+except Exception:
+    from tkinter import ttk, filedialog, messagebox
+    THEME = False
+
+
 class App:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_TITLE)
         self.root.resizable(True, True)
+        self.config = load_config()
 
-        # Vars, prepopulated with hard coded defaults
-        self.var_mame = tk.StringVar(value=HARDCODED["mame"])
-        self.var_rompath = tk.StringVar(value=HARDCODED["rompath"])
-        self.var_system_dsk = tk.StringVar(value=HARDCODED["system_dsk"])  # optional but handy for Einstein DOS
+        # Variables
+        self.var_mame = tk.StringVar(value=self.config["mame"])
+        self.var_rompath = tk.StringVar(value=self.config["rompath"])
+        self.var_system_dsk = tk.StringVar(value=self.config["system_dsk"])
         self.var_user_dsk = tk.StringVar(value="")
         self.var_machine = tk.StringVar(value=DEFAULT_MACHINE)
         self.var_resolution = tk.StringVar(value=DEFAULT_RESOLUTION)
-
         self.var_video_soft = tk.BooleanVar(value=True)
         self.var_windowed = tk.BooleanVar(value=True)
         self.var_ui_active = tk.BooleanVar(value=True)
         self.var_skip_intro = tk.BooleanVar(value=True)
-
-        # Drive assignment
-        self.var_use_system = tk.BooleanVar(value=True)  # if true, system in flop1, user in flop2
-
-        # Derived
+        self.var_use_system = tk.BooleanVar(value=True)
         self.last_log_path: Path | None = None
 
-        # Build UI
         self._build_ui()
         self._fit_to_content()
 
-    # UI helpers
     def _build_ui(self):
         pad = 8
         default_font = tkfont.nametofont("TkDefaultFont")
-        emphasised_font = default_font.copy(); emphasised_font.configure(weight="bold")
+        emphasised_font = default_font.copy()
+        emphasised_font.configure(weight="bold")
 
         frm = ttk.Frame(self.root, padding=10)
         frm.pack(fill="both", expand=True)
 
+        # Disks
         lf_disks = ttk.LabelFrame(frm, text="Disks")
         lf_disks.pack(fill="x", pady=(0, pad))
         self._row(lf_disks, "User .dsk:", self.var_user_dsk, browse=True, filetypes=[("Disk images", "*.dsk *.DSK"), ("All files", "*.*")], label_font=emphasised_font)
         self._row(lf_disks, "System .dsk:", self.var_system_dsk, browse=True, filetypes=[("Disk images", "*.dsk *.DSK"), ("All files", "*.*")])
-
         dr = ttk.Frame(lf_disks); dr.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Checkbutton(dr, text="Use system disk in drive 1 and user disk in drive 2", variable=self.var_use_system).pack(side="left")
 
+        # MAME
         lf_mame = ttk.LabelFrame(frm, text="MAME")
         lf_mame.pack(fill="x", pady=(0, pad))
-        self._row(lf_mame, "mame:", self.var_mame, browse=True)
+        self._row(lf_mame, "MAME executable:", self.var_mame, browse=True, filetypes=[("Executable", "*.exe *.bin *.app *.sh"), ("All files", "*.*")])
         self._row(lf_mame, "ROM path:", self.var_rompath, browse_dir=True)
         self._row(lf_mame, "Machine:", self.var_machine)
 
@@ -151,10 +177,7 @@ class App:
         resrow = ttk.Frame(lf_mame)
         resrow.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Label(resrow, text="Resolution:").pack(side="left")
-        res_values = [
-            "640x480", "800x600", "1024x768", "1280x720", "1280x800",
-            "1366x768", "1600x900", "1920x1080", "2560x1440"
-        ]
+        res_values = ["640x480", "800x600", "1024x768", "1280x720", "1366x768", "1600x900", "1920x1080", "2560x1440"]
         res_combo = ttk.Combobox(resrow, textvariable=self.var_resolution, values=res_values, width=12, state="readonly")
         res_combo.pack(side="left", padx=8)
 
@@ -163,27 +186,23 @@ class App:
         style = "success.TButton" if THEME else None
         ttk.Button(actions, text="Run in MAME", command=self._start_run, style=style).pack(side="left")
         ttk.Button(actions, text="Open last log", command=self._open_last_log).pack(side="left", padx=10)
+        ttk.Button(actions, text="Save Config", command=self._save_current_config).pack(side="left", padx=10)
 
-        # Status lines
         self.status = tk.StringVar(value="Ready")
-        self.status2 = tk.StringVar(value="")
         ttk.Label(frm, textvariable=self.status, anchor="w").pack(fill="x")
-        ttk.Label(frm, textvariable=self.status2, anchor="w", foreground="#666").pack(fill="x")
 
     def _fit_to_content(self):
         self.root.update_idletasks()
-        req_w = self.root.winfo_reqwidth(); req_h = self.root.winfo_reqheight()
-        margin = 120
-        scr_w = self.root.winfo_screenwidth(); scr_h = self.root.winfo_screenheight()
-        width = min(req_w, scr_w - margin); height = min(req_h, scr_h - margin)
-        self.root.minsize(width, height)
-        x = (scr_w - width) // 2; y = (scr_h - height) // 2
+        req_w, req_h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+        scr_w, scr_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        width, height = min(req_w, scr_w - 120), min(req_h, scr_h - 120)
+        x, y = (scr_w - width) // 2, (scr_h - height) // 2
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
     def _row(self, parent, label, var, browse=False, browse_dir=False, filetypes=None, label_font=None):
         row = ttk.Frame(parent); row.pack(fill="x", padx=6, pady=4)
         lbl = ttk.Label(row, text=label, width=18, anchor="e")
-        if label_font is not None: lbl.configure(font=label_font)
+        if label_font: lbl.configure(font=label_font)
         lbl.pack(side="left")
         entry = ttk.Entry(row, textvariable=var)
         entry.pack(side="left", fill="x", expand=True, padx=6)
@@ -192,7 +211,6 @@ class App:
         if browse_dir:
             ttk.Button(row, text="Choose", command=lambda: self._browse_dir(var)).pack(side="left")
 
-    # Browsers
     def _browse_file(self, var, filetypes=None):
         path = filedialog.askopenfilename(title="Choose file", filetypes=filetypes or [("All files", "*.*")])
         if path:
@@ -203,70 +221,68 @@ class App:
         if d:
             var.set(d)
 
-    # Paths and logging
+    def _save_current_config(self):
+        self.config.update({
+            "mame": self.var_mame.get().strip(),
+            "rompath": self.var_rompath.get().strip(),
+            "system_dsk": self.var_system_dsk.get().strip(),
+            "workdir": DEFAULTS["workdir"],
+        })
+        save_config(self.config)
+        self.status.set("Configuration saved.")
+
     def _out_paths(self):
-        workdir = Path(HARDCODED["workdir"])  # simple work area for logs
+        workdir = Path(self.config["workdir"])
         chosen = Path(self.var_user_dsk.get()).name or "USER"
         base = Path(chosen).stem.upper()
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log = LOG_DIR / f"{base}_run.log"
-        return workdir, base, log
+        return workdir, base, LOG_DIR / f"{base}_run.log"
 
     def _open_last_log(self):
-        if not self.last_log_path or not Path(self.last_log_path).exists():
+        if not self.last_log_path or not self.last_log_path.exists():
             messagebox.showinfo(APP_NAME, "No log available yet.")
             return
-        # Try to open the log with the default app
         try:
             if sys.platform.startswith("linux"):
                 subprocess.Popen(["xdg-open", str(self.last_log_path)])
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", str(self.last_log_path)])
-            elif os.name == "nt":
-                os.startfile(str(self.last_log_path))  # type: ignore[attr-defined]
+            else:
+                os.startfile(str(self.last_log_path))
         except Exception as e:
             messagebox.showerror(APP_NAME, f"Could not open log: {e}")
 
-    # Run
     def _start_run(self):
         threading.Thread(target=self._run_thread, daemon=True).start()
 
     def _run_thread(self):
         try:
             user_dsk = self.var_user_dsk.get().strip()
-            if not user_dsk:
-                self.status.set("Please choose a .dsk to run.")
-                return
-            if not Path(user_dsk).exists():
-                self.status.set("Selected .dsk not found.")
+            if not user_dsk or not Path(user_dsk).exists():
+                self.status.set("Please select a valid .dsk file.")
                 return
 
             workdir, base, log_path = self._out_paths()
             logger = FileLogger(log_path)
             self.last_log_path = log_path
 
-            self.status.set("Launching MAMEâ¦")
-            logger.line(f"User DSK: {user_dsk}")
-            logger.line(f"System DSK: {self.var_system_dsk.get().strip()}")
+            mame = self.var_mame.get().strip()
+            if not Path(mame).exists():
+                self.status.set("MAME executable not found.")
+                return
 
-            mame = self.var_mame.get().strip() or "mame"
             rompath = self.var_rompath.get().strip()
-            machine = (self.var_machine.get() or DEFAULT_MACHINE).strip()
+            machine = self.var_machine.get().strip() or DEFAULT_MACHINE
 
-            args: list[str] = []
-            if self.var_video_soft.get():
-                args += ["-video", "soft"]
+            args = []
+            if self.var_video_soft.get(): args += ["-video", "soft"]
             args += ["-window" if self.var_windowed.get() else "-nowindow"]
-            if self.var_ui_active.get():
-                args += ["-ui_active"]
-            if self.var_skip_intro.get():
-                args += ["-skip_gameinfo"]
-            res = (self.var_resolution.get() or "").strip()
-            if res:
-                args += ["-resolution", res]
+            if self.var_ui_active.get(): args += ["-ui_active"]
+            if self.var_skip_intro.get(): args += ["-skip_gameinfo"]
+            res = self.var_resolution.get().strip()
+            if res: args += ["-resolution", res]
 
-            # Drive mapping
-            flop_args: list[str] = []
+            flop_args = []
             if self.var_use_system.get() and self.var_system_dsk.get().strip():
                 flop_args += ["-flop1", self.var_system_dsk.get().strip(), "-flop2", user_dsk]
             else:
@@ -275,13 +291,9 @@ class App:
             cmd = [mame] + args + ["-rompath", rompath, machine] + flop_args
             env = ensure_runtime_dir_env(os.environ.copy())
 
+            self.status.set("Launching MAME…")
             logger.stream_proc(cmd, cwd=str(workdir), env=env)
             self.status.set("MAME finished. See log for details.")
-            logger.line("MAME FINISHED")
-        except subprocess.CalledProcessError as e:
-            self.status.set("MAME failed, see log.")
-            if self.last_log_path:
-                FileLogger(self.last_log_path).line(f"ERROR: {' '.join(e.cmd)} rc={e.returncode}")
         except Exception as e:
             self.status.set(f"MAME error: {e}")
             if self.last_log_path:
@@ -289,6 +301,10 @@ class App:
 
 
 def main():
+    if sys.platform.startswith("linux"):
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            print("No graphical display detected. Please run in a desktop environment.")
+            sys.exit(1)
     if THEME:
         app = tb.Window(themename="cosmo")
         App(app)
@@ -301,4 +317,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
