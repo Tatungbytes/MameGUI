@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# MameGUI.py — Cross-platform MAME disk launcher (Windows/Linux)
+# MameGUI.py — Cross-platform MAME disk launcher with configuration support
 
 import os
 import sys
@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 APP_NAME = "MameGUI"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 CONFIG_FILE = Path.home() / ".mamegui_config.json"
@@ -26,7 +26,7 @@ if os.name == "nt":
     DEFAULTS = {
         "mame": str(Path("C:/MAME/mame.exe")),
         "rompath": str(Path.home() / "Documents/mame/roms"),
-        "system_dsk": str(Path.home() / "Documents/Disk Images/DOS80.DSK"),
+        "system_dsk": str(Path.home() / "Documents/Disk Images/DOS80.DSK")),
         "workdir": str(Path.home() / "Desktop"),
     }
 else:
@@ -45,7 +45,6 @@ DEFAULT_RESOLUTION = "800x600"
 # ---------------------------------------------------------------------------
 
 def load_config() -> dict:
-    """Load configuration or create defaults."""
     cfg = DEFAULTS.copy()
     if CONFIG_FILE.exists():
         try:
@@ -57,7 +56,6 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict):
-    """Save configuration to JSON."""
     try:
         CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     except Exception as e:
@@ -99,11 +97,13 @@ class FileLogger:
         self._write(text if text.endswith("\n") else text + "\n")
 
     def cmd(self, args):
-        self.line(f"$ {' '.join(args)}")
+        self.line(f"$ {' '.join(map(str, args))}")
 
     def stream_proc(self, args, cwd=None, env=None):
         self.cmd(args)
-        proc = subprocess.Popen(args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.Popen(args, cwd=cwd, env=env,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
         for line in proc.stdout:
             self._write(line)
         rc = proc.wait()
@@ -275,6 +275,9 @@ class App:
         threading.Thread(target=self._run_thread, daemon=True).start()
 
     def _run_thread(self):
+        def normalize_path(p):
+            return str(Path(p).expanduser().resolve().as_posix())
+
         try:
             user_dsk = self.var_user_dsk.get().strip()
             if not user_dsk or not Path(user_dsk).exists():
@@ -285,13 +288,15 @@ class App:
             logger = FileLogger(log_path)
             self.last_log_path = log_path
 
-            mame = self.var_mame.get().strip()
+            mame = normalize_path(self.var_mame.get().strip())
             if not Path(mame).exists():
                 self.status.set("MAME executable not found.")
                 return
 
-            rompath = self.var_rompath.get().strip()
+            rompath = normalize_path(self.var_rompath.get().strip())
             machine = self.var_machine.get().strip() or DEFAULT_MACHINE
+            system_dsk = normalize_path(self.var_system_dsk.get().strip()) if self.var_system_dsk.get().strip() else ""
+            user_dsk = normalize_path(user_dsk)
 
             args = []
             if self.var_video_soft.get():
@@ -306,8 +311,8 @@ class App:
                 args += ["-resolution", res]
 
             flop_args = []
-            if self.var_use_system.get() and self.var_system_dsk.get().strip():
-                flop_args += ["-flop1", self.var_system_dsk.get().strip(), "-flop2", user_dsk]
+            if self.var_use_system.get() and system_dsk:
+                flop_args += ["-flop1", system_dsk, "-flop2", user_dsk]
             else:
                 flop_args += ["-flop1", user_dsk]
 
@@ -317,6 +322,13 @@ class App:
             self.status.set("Launching MAME…")
             logger.stream_proc(cmd, cwd=str(workdir), env=env)
             self.status.set("MAME finished. See log for details.")
+        except subprocess.CalledProcessError as e:
+            if e.returncode == 4:
+                self.status.set("MAME error: Missing ROMs or unknown machine.")
+            else:
+                self.status.set(f"MAME failed (exit {e.returncode}). See log.")
+            if self.last_log_path:
+                FileLogger(self.last_log_path).line(f"ERROR rc={e.returncode}: {' '.join(e.cmd)}")
         except Exception as e:
             self.status.set(f"MAME error: {e}")
             if self.last_log_path:
@@ -327,7 +339,7 @@ class App:
 # ---------------------------------------------------------------------------
 
 def main():
-    # 🚫 No display check at all — runs on Windows, Linux, or macOS
+    # No Linux DISPLAY checks — runs on Windows, Linux, macOS
     if THEME:
         app = tb.Window(themename="cosmo")
         App(app)
