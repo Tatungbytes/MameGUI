@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 APP_NAME = "MameGUI"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 CONFIG_FILE = Path.home() / ".mamegui_config.json"
@@ -81,8 +81,8 @@ def ensure_runtime_dir_env(env: dict) -> dict:
     return env
 
 
-def ensure_display():
-    """Ensure a GUI environment is available (Linux only)."""
+def ensure_display_if_linux():
+    """Only run a display check on Linux, skip everywhere else."""
     if sys.platform.startswith("linux"):
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
             print("No graphical display detected. Please run in a desktop session or use SSH with -X.")
@@ -330,7 +330,8 @@ class App:
 # ---------------------------------------------------------------------------
 
 def main():
-    ensure_display()
+    # Only check for Linux displays — skip on Windows entirely
+    ensure_display_if_linux()
     if THEME:
         app = tb.Window(themename="cosmo")
         App(app)
