@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 
 APP_NAME = "MameGUI"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 CONFIG_FILE = Path.home() / ".mamegui_config.json"
@@ -26,7 +26,7 @@ if os.name == "nt":
     DEFAULTS = {
         "mame": str(Path("C:/MAME/mame.exe")),
         "rompath": str(Path.home() / "Documents/mame/roms"),
-        "system_dsk": str(Path.home() / "Documents/Disk Images/DOS80.DSK")),
+        "system_dsk": str(Path.home() / "Documents/Disk Images/DOS80.DSK"),
         "workdir": str(Path.home() / "Desktop"),
     }
 else:
