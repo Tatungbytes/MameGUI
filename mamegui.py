@@ -8,11 +8,12 @@ import subprocess
 import threading
 import datetime
 from pathlib import Path
+from typing import Optional
 import tkinter as tk
 from tkinter import font as tkfont
 
 APP_NAME = "MameGUI"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.7"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 CONFIG_FILE = Path.home() / ".mamegui_config.json"
@@ -41,7 +42,7 @@ DEFAULT_MACHINE = "einstein"
 DEFAULT_RESOLUTION = "800x600"
 
 # ---------------------------------------------------------------------------
-# Configuration management
+# Config management
 # ---------------------------------------------------------------------------
 
 def load_config() -> dict:
@@ -49,7 +50,8 @@ def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
             user_cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            cfg.update(user_cfg)
+            if isinstance(user_cfg, dict):
+                cfg.update(user_cfg)
         except Exception:
             pass
     return cfg
@@ -59,21 +61,20 @@ def save_config(cfg: dict):
     try:
         CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     except Exception as e:
-        print(f"Warning: could not save config: {e}")
+        print(f"Warning: could not save config: {e}", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Environment helpers
 # ---------------------------------------------------------------------------
 
 def ensure_runtime_dir_env(env: dict) -> dict:
-    """Ensure XDG_RUNTIME_DIR for Linux MAME (no-op on Windows)."""
     if os.name != "nt":
-        if "XDG_RUNTIME_DIR" not in env or not env["XDG_RUNTIME_DIR"]:
+        if not env.get("XDG_RUNTIME_DIR"):
             cand = f"/run/user/{os.getuid()}"
             if os.path.isdir(cand):
                 env["XDG_RUNTIME_DIR"] = cand
             else:
-                tmp = f"/tmp/runtime-{os.environ.get('USER', 'user')}"
+                tmp = f"/tmp/runtime-{os.environ.get('USER','user')}"
                 os.makedirs(tmp, mode=0o700, exist_ok=True)
                 env["XDG_RUNTIME_DIR"] = tmp
     return env
@@ -101,9 +102,15 @@ class FileLogger:
 
     def stream_proc(self, args, cwd=None, env=None):
         self.cmd(args)
-        proc = subprocess.Popen(args, cwd=cwd, env=env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.Popen(
+            args,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert proc.stdout is not None
         for line in proc.stdout:
             self._write(line)
         rc = proc.wait()
@@ -131,7 +138,6 @@ class App:
         self.root.resizable(True, True)
         self.config = load_config()
 
-        # Variables
         self.var_mame = tk.StringVar(value=self.config["mame"])
         self.var_rompath = tk.StringVar(value=self.config["rompath"])
         self.var_system_dsk = tk.StringVar(value=self.config["system_dsk"])
@@ -143,7 +149,7 @@ class App:
         self.var_ui_active = tk.BooleanVar(value=True)
         self.var_skip_intro = tk.BooleanVar(value=True)
         self.var_use_system = tk.BooleanVar(value=True)
-        self.last_log_path: Path | None = None
+        self.last_log_path: Optional[Path] = None
 
         self._build_ui()
         self._fit_to_content()
@@ -151,18 +157,17 @@ class App:
     def _build_ui(self):
         pad = 8
         default_font = tkfont.nametofont("TkDefaultFont")
-        emphasised_font = default_font.copy()
-        emphasised_font.configure(weight="bold")
+        bold_font = default_font.copy()
+        bold_font.configure(weight="bold")
 
         frm = ttk.Frame(self.root, padding=10)
         frm.pack(fill="both", expand=True)
 
-        # Disks section
         lf_disks = ttk.LabelFrame(frm, text="Disks")
         lf_disks.pack(fill="x", pady=(0, pad))
         self._row(lf_disks, "User .dsk:", self.var_user_dsk, browse=True,
                   filetypes=[("Disk images", "*.dsk *.DSK"), ("All files", "*.*")],
-                  label_font=emphasised_font)
+                  label_font=bold_font)
         self._row(lf_disks, "System .dsk:", self.var_system_dsk, browse=True,
                   filetypes=[("Disk images", "*.dsk *.DSK"), ("All files", "*.*")])
         dr = ttk.Frame(lf_disks)
@@ -170,7 +175,6 @@ class App:
         ttk.Checkbutton(dr, text="Use system disk in drive 1 and user disk in drive 2",
                         variable=self.var_use_system).pack(side="left")
 
-        # MAME section
         lf_mame = ttk.LabelFrame(frm, text="MAME")
         lf_mame.pack(fill="x", pady=(0, pad))
         self._row(lf_mame, "MAME executable:", self.var_mame, browse=True,
@@ -185,7 +189,6 @@ class App:
         ttk.Checkbutton(toggles, text="Enable MAME UI (Tab menu, Esc quit)", variable=self.var_ui_active).pack(side="left", padx=(0, 20))
         ttk.Checkbutton(toggles, text="Skip MAME intro screen", variable=self.var_skip_intro).pack(side="left")
 
-        # Resolution dropdown
         resrow = ttk.Frame(lf_mame)
         resrow.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Label(resrow, text="Resolution:").pack(side="left")
@@ -193,7 +196,6 @@ class App:
         res_combo = ttk.Combobox(resrow, textvariable=self.var_resolution, values=res_values, width=12, state="readonly")
         res_combo.pack(side="left", padx=8)
 
-        # Action buttons
         actions = ttk.Frame(frm)
         actions.pack(fill="x", pady=(0, pad))
         style = "success.TButton" if THEME else None
@@ -256,8 +258,8 @@ class App:
         return workdir, base, LOG_DIR / f"{base}_run.log"
 
     def _open_last_log(self):
+        from tkinter import messagebox
         if not self.last_log_path or not self.last_log_path.exists():
-            from tkinter import messagebox
             messagebox.showinfo(APP_NAME, "No log available yet.")
             return
         try:
@@ -266,17 +268,19 @@ class App:
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", str(self.last_log_path)])
             else:
-                os.startfile(str(self.last_log_path))
+                os.startfile(str(self.last_log_path))  # type: ignore[attr-defined]
         except Exception as e:
-            from tkinter import messagebox
             messagebox.showerror(APP_NAME, f"Could not open log: {e}")
 
     def _start_run(self):
         threading.Thread(target=self._run_thread, daemon=True).start()
 
     def _run_thread(self):
-        def normalize_path(p):
-            return str(Path(p).expanduser().resolve().as_posix())
+        def normalize_path(p: str) -> str:
+            try:
+                return str(Path(p).expanduser().resolve().as_posix())
+            except Exception:
+                return str(Path(p).expanduser()).replace("\\", "/")
 
         try:
             user_dsk = self.var_user_dsk.get().strip()
@@ -339,7 +343,6 @@ class App:
 # ---------------------------------------------------------------------------
 
 def main():
-    # No Linux DISPLAY checks — runs on Windows, Linux, macOS
     if THEME:
         app = tb.Window(themename="cosmo")
         App(app)
@@ -349,6 +352,8 @@ def main():
         App(root)
         root.mainloop()
 
-
 if __name__ == "__main__":
     main()
+    # keep console open on Windows if launched by double-click
+    if os.name == "nt":
+        input("\nPress Enter to close...")
